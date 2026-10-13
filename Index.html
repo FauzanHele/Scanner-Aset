@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scan Aset</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; max-width: 520px; margin-inline: auto; }
+  input, button { font-size: 16px; padding: 10px; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+  button { background: #1a73e8; color: #fff; border: 0; border-radius: 8px; }
+  #reader { width: 100%; border-radius: 12px; overflow: hidden; background: #000; }
+  #status { margin: 10px 0; color: #555; }
+  #status.err { color: #c62828; }
+  .row { display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 6px 0; gap: 12px; }
+  .row b { color: #666; font-weight: 500; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <!-- GANTI dengan URL web app Anda (yang berakhiran /exec) -->
+  <script>const API_URL = 'https://script.google.com/macros/s/https://script.google.com/macros/s/AKfycbzcDl4dDID7QRkzOSH7G6izl8E3c0rZQy_hlni5n4I4j1EkQdYBmoZuhDDgjaP8cAUftg/exec';</script>
+
+  <div id="login">
+    <h2>Scan Aset</h2>
+    <input id="u" placeholder="Username" autocomplete="username">
+    <input id="p" type="password" placeholder="Password" autocomplete="current-password">
+    <button onclick="doLogin()">Masuk</button>
+  </div>
+
+  <div id="app" class="hidden">
+    <button id="startBtn" onclick="startScan()">📷 Mulai Scan</button>
+    <div id="reader"></div>
+    <div id="status"></div>
+    <div id="result"></div>
+    <input id="manual" placeholder="Atau ketik / scan alat, lalu Enter">
+  </div>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+  let token = localStorage.getItem('scanToken');
+  let scanner = null, busy = false;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function setStatus(t, err) { $('status').className = err ? 'err' : ''; $('status').textContent = t || ''; }
+
+  // text/plain supaya browser tidak mengirim preflight CORS (Apps Script tidak menjawab OPTIONS)
+  async function api(body) {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body)
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    return json.data;
+  }
+
+  function showApp() { $('login').classList.add('hidden'); $('app').classList.remove('hidden'); }
+  if (token) showApp();
+
+  async function doLogin() {
+    try {
+      const d = await api({ action: 'login', username: $('u').value.trim(), password: $('p').value });
+      token = d.token; localStorage.setItem('scanToken', token); showApp();
+    } catch (e) { alert(e.message); }
+  }
+
+  function startScan() {
+    if (scanner) return;
+    $('result').innerHTML = '';
+    setStatus('Membuka kamera...');
+    const F = Html5QrcodeSupportedFormats;
+    scanner = new Html5Qrcode('reader', {
+      formatsToSupport: [F.CODE_128, F.CODE_39, F.EAN_13, F.EAN_8, F.UPC_A, F.ITF, F.QR_CODE],
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      verbose: false
+    });
+    scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.max(80, Math.floor(Math.min(h, w) * 0.5)) }) },
+      onCode, () => {}
+    ).then(() => setStatus('Arahkan kamera ke barcode...'))
+     .catch(e => { scanner = null; setStatus('Kamera gagal: ' + (e.message || e), true); });
+  }
+
+  async function stopScan() {
+    if (!scanner) return;
+    const s = scanner; scanner = null;
+    try { await s.stop(); s.clear(); } catch (e) {}
+  }
+
+  async function onCode(text) {
+    const code = String(text || '').trim();
+    if (!code || busy) return;
+    busy = true;
+    if (navigator.vibrate) navigator.vibrate(120);
+    await stopScan();
+    setStatus('Mencari ' + code + '...');
+    try {
+      const a = await api({ action: 'scan', token, code });
+      if (!a) { setStatus('Barcode ' + code + ' tidak terdaftar.', true); return; }
+      setStatus('');
+      const f = (k, v) => '<div class="row"><b>' + k + '</b><span>' + esc(v || '-') + '</span></div>';
+      $('result').innerHTML = '<h3>' + esc(a.name || a.id) + '</h3>' +
+        f('Nomor Asset', a.id) + f('Kategori', a.category) + f('Lokasi', a.location || a.sheetName) +
+        f('Status', a.statusLabel) + f('Kondisi', a.kondisi) + f('Pemeriksaan Terakhir', a.tglPeriksa) +
+        '<button onclick="startScan()">Scan Lagi</button>';
+    } catch (e) {
+      if (/Sesi berakhir/i.test(e.message)) { localStorage.removeItem('scanToken'); location.reload(); return; }
+      setStatus('Gagal: ' + e.message, true);
+    } finally { busy = false; }
+  }
+
+  $('manual').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); const v = $('manual').value; $('manual').value = ''; onCode(v); }
+  });
+</script>
+</body>
+</html>
