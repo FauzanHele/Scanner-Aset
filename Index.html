@@ -13,6 +13,9 @@
   #status.err { color: #c62828; }
   .row { display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 6px 0; gap: 12px; }
   .row b { color: #666; font-weight: 500; }
+  .photos { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 12px 0; }
+  .photos img { width: 100%; border-radius: 8px; display: block; background: #eee; }
+  .photos .note { grid-column: 1 / -1; font-size: 13px; color: #777; }
   .hidden { display: none; }
 </style>
 </head>
@@ -38,7 +41,7 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
   let token = localStorage.getItem('scanToken');
-  let scanner = null, busy = false;
+  let scanner = null, busy = false, currentCode = '';
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function setStatus(t, err) { $('status').className = err ? 'err' : ''; $('status').textContent = t || ''; }
@@ -68,6 +71,7 @@
   function startScan() {
     if (scanner) return;
     $('result').innerHTML = '';
+    currentCode = '';
     setStatus('Membuka kamera...');
     const F = Html5QrcodeSupportedFormats;
     scanner = new Html5Qrcode('reader', {
@@ -89,6 +93,21 @@
     try { await s.stop(); s.clear(); } catch (e) {}
   }
 
+  // Foto hasil pemeriksaan (maks. 4) dimuat setelah data aset tampil; butuh beberapa detik.
+  async function loadPhotos(assetId) {
+    try {
+      const photos = await api({ action: 'photos', token, code: assetId });
+      const box = $('photos');
+      if (!box || currentCode !== assetId) return; // sudah scan aset lain / hasil dibersihkan
+      if (!photos || !photos.length) { box.innerHTML = '<span class="note">Belum ada foto pemeriksaan.</span>'; return; }
+      box.innerHTML = photos.map(p => '<img alt="Foto ' + esc(p.slot) + '" src="' + esc(p.uri) + '">').join('');
+    } catch (e) {
+      if (/Sesi berakhir/i.test(e.message)) { localStorage.removeItem('scanToken'); location.reload(); return; }
+      const box = $('photos');
+      if (box && currentCode === assetId) box.innerHTML = '<span class="note">Foto tidak bisa dimuat: ' + esc(e.message) + '</span>';
+    }
+  }
+
   async function onCode(text) {
     const code = String(text || '').trim();
     if (!code || busy) return;
@@ -100,11 +119,14 @@
       const a = await api({ action: 'scan', token, code });
       if (!a) { setStatus('Barcode ' + code + ' tidak terdaftar.', true); return; }
       setStatus('');
+      currentCode = a.id;
       const f = (k, v) => '<div class="row"><b>' + k + '</b><span>' + esc(v || '-') + '</span></div>';
       $('result').innerHTML = '<h3>' + esc(a.name || a.id) + '</h3>' +
         f('Nomor Asset', a.id) + f('Kategori', a.category) + f('Lokasi', a.location || a.sheetName) +
         f('Status', a.statusLabel) + f('Kondisi', a.kondisi) + f('Pemeriksaan Terakhir', a.tglPeriksa) +
+        '<div class="photos" id="photos"><span class="note">Memuat foto...</span></div>' +
         '<button onclick="startScan()">Scan Lagi</button>';
+      loadPhotos(a.id); // tanpa await: data aset sudah tampil, foto menyusul
     } catch (e) {
       if (/Sesi berakhir/i.test(e.message)) { localStorage.removeItem('scanToken'); location.reload(); return; }
       setStatus('Gagal: ' + e.message, true);
